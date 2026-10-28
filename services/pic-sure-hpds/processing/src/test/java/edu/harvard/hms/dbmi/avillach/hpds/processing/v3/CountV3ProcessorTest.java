@@ -4,6 +4,7 @@ import edu.harvard.hms.dbmi.avillach.hpds.data.phenotype.ColumnMeta;
 import edu.harvard.hms.dbmi.avillach.hpds.data.phenotype.KeyAndValue;
 import edu.harvard.hms.dbmi.avillach.hpds.data.phenotype.PhenoCube;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.ResultType;
+import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.GroupedCrossCount;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.Operator;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.PhenotypicFilter;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.PhenotypicFilterType;
@@ -235,5 +236,93 @@ class CountV3ProcessorTest {
         assertEquals(1, crossCounts.get(agePath).get(40.0));
         // patient 3 (65) is not in the cohort, so it is absent
         assertNull(crossCounts.get(agePath).get(65.0));
+    }
+
+    private static final String SEX = "\\demographics\\SEX\\";
+    private static final String DIAGNOSIS = "\\clinical\\DIAGNOSIS\\";
+    private static final String AGE = "\\demographics\\AGE\\";
+
+    private static Query groupedQuery(String groupBy, String target) {
+        PhenotypicFilter required = new PhenotypicFilter(PhenotypicFilterType.REQUIRED, groupBy, null, null, null, null);
+        return new Query(List.of(groupBy, target), List.of(), required, List.of(), ResultType.GROUPED_CROSS_COUNT, null, null);
+    }
+
+    private static PhenoCube<String> categoricalCube(String path, Map<String, Set<Integer>> categories) {
+        TreeMap<String, TreeSet<Integer>> categoryMap = new TreeMap<>();
+        categories.forEach((category, patients) -> categoryMap.put(category, new TreeSet<>(patients)));
+        PhenoCube<String> cube = new PhenoCube<>(path, String.class);
+        cube.setCategoryMap(categoryMap);
+        return cube;
+    }
+
+    @Test
+    public void runGroupedCrossCounts_categoricalTarget_countsCohortPatientsPerGroup() {
+        Query query = groupedQuery(SEX, DIAGNOSIS);
+        // Patient 6 is outside the cohort; "other" sex has no cohort patients and must be omitted
+        when(queryExecutor.getPatientSubsetForQuery(query)).thenReturn(Set.of(1, 2, 3, 4, 5));
+        when(queryExecutor.getDictionary()).thenReturn(
+            Map.of(
+                SEX, new ColumnMeta().setName(SEX).setCategorical(true), DIAGNOSIS, new ColumnMeta().setName(DIAGNOSIS).setCategorical(true)
+            )
+        );
+        when(phenotypicObservationStore.getCube(SEX))
+            .thenReturn(Optional.of(categoricalCube(SEX, Map.of("male", Set.of(1, 2, 3), "female", Set.of(4, 5), "other", Set.of(6)))));
+        when(phenotypicObservationStore.getCube(DIAGNOSIS))
+            .thenReturn(Optional.of(categoricalCube(DIAGNOSIS, Map.of("A", Set.of(1, 4, 6), "B", Set.of(2, 3)))));
+
+        GroupedCrossCount result = countV3Processor.runGroupedCrossCounts(query);
+
+        assertEquals(SEX, result.groupBy());
+        assertEquals(DIAGNOSIS, result.target());
+        assertFalse(result.targetContinuous());
+        assertEquals(Map.of("male", Map.of("A", 1, "B", 2), "female", Map.of("A", 1)), result.counts());
+    }
+
+    @Test
+    public void runGroupedCrossCounts_continuousTarget_countsValuesPerGroup() {
+        Query query = groupedQuery(SEX, AGE);
+        PhenoCube<Double> ages = new PhenoCube<>(AGE, Double.class);
+        ages.setSortedByKey(
+            new KeyAndValue[] {new KeyAndValue<>(1, 30.0), new KeyAndValue<>(2, 30.0), new KeyAndValue<>(3, 45.0),
+                new KeyAndValue<>(4, 52.5)}
+        );
+        when(queryExecutor.getPatientSubsetForQuery(query)).thenReturn(Set.of(1, 2, 3, 4));
+        when(queryExecutor.getDictionary()).thenReturn(
+            Map.of(SEX, new ColumnMeta().setName(SEX).setCategorical(true), AGE, new ColumnMeta().setName(AGE).setCategorical(false))
+        );
+        when(phenotypicObservationStore.getCube(SEX))
+            .thenReturn(Optional.of(categoricalCube(SEX, Map.of("male", Set.of(1, 2, 3), "female", Set.of(4)))));
+        when(phenotypicObservationStore.getCube(AGE)).thenReturn(Optional.of(ages));
+
+        GroupedCrossCount result = countV3Processor.runGroupedCrossCounts(query);
+
+        assertTrue(result.targetContinuous());
+        assertEquals(Map.of("30.0", 2, "45.0", 1), result.counts().get("male"));
+        assertEquals(Map.of("52.5", 1), result.counts().get("female"));
+    }
+
+    @Test
+    public void runGroupedCrossCounts_continuousGroup_isRejected() {
+        Query query = groupedQuery(AGE, SEX);
+        when(queryExecutor.getDictionary()).thenReturn(
+            Map.of(SEX, new ColumnMeta().setName(SEX).setCategorical(true), AGE, new ColumnMeta().setName(AGE).setCategorical(false))
+        );
+
+        assertThrows(IllegalArgumentException.class, () -> countV3Processor.runGroupedCrossCounts(query));
+    }
+
+    @Test
+    public void runGroupedCrossCounts_selectNotTwoPaths_isRejected() {
+        Query query = new Query(List.of(SEX), List.of(), null, List.of(), ResultType.GROUPED_CROSS_COUNT, null, null);
+
+        assertThrows(IllegalArgumentException.class, () -> countV3Processor.runGroupedCrossCounts(query));
+    }
+
+    @Test
+    public void runGroupedCrossCounts_unknownPath_isRejected() {
+        Query query = groupedQuery(SEX, DIAGNOSIS);
+        when(queryExecutor.getDictionary()).thenReturn(Map.of(SEX, new ColumnMeta().setName(SEX).setCategorical(true)));
+
+        assertThrows(IllegalArgumentException.class, () -> countV3Processor.runGroupedCrossCounts(query));
     }
 }

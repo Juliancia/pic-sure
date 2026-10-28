@@ -24,6 +24,11 @@ public enum ResultType {
     @Schema(description = "Return one patient count for each continuous concept path included in any filters of the query")
     CONTINUOUS_CROSS_COUNT,
 
+    @Schema(
+        description = "Return the distribution of one concept within each category of another: `select` must be [group concept path (categorical), target concept path]"
+    )
+    GROUPED_CROSS_COUNT,
+
     @Schema(description = "Return all variant info column metadata")
     INFO_COLUMN_LISTING,
 

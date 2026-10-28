@@ -2,8 +2,10 @@ package edu.harvard.hms.dbmi.avillach.hpds.processing.v3;
 
 import com.google.common.collect.Sets;
 import edu.harvard.hms.dbmi.avillach.hpds.data.genomic.VariantUtils;
+import edu.harvard.hms.dbmi.avillach.hpds.data.phenotype.ColumnMeta;
 import edu.harvard.hms.dbmi.avillach.hpds.data.phenotype.KeyAndValue;
 import edu.harvard.hms.dbmi.avillach.hpds.data.phenotype.PhenoCube;
+import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.GroupedCrossCount;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.PhenotypicFilter;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.PhenotypicFilterType;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.Query;
@@ -200,6 +202,82 @@ public class CountV3Processor implements HpdsV3Processor {
         return Optional.ofNullable(queryExecutor.getDictionary().get(phenotypicFilter.conceptPath()))
             .map(meta -> !meta.isCategorical())
             .orElse(false);
+    }
+
+    /**
+     * Returns the distribution of a target concept within each category of a categorical group concept, restricted to the query cohort. The
+     * query's {@code select} must be exactly {@code [groupBy, target]}. Each group is intersected with the cohort once, then counted
+     * against the target's category map (categorical target) or observed values (continuous target), so one query replaces a separate cross
+     * count per group.
+     *
+     * @throws IllegalArgumentException if {@code select} is not two concept paths, a path is unknown, or the group concept is not
+     *         categorical
+     */
+    @SuppressWarnings("unchecked")
+    public GroupedCrossCount runGroupedCrossCounts(Query query) {
+        if (query.select().size() != 2) {
+            throw new IllegalArgumentException("GROUPED_CROSS_COUNT requires select = [group concept path, target concept path]");
+        }
+        String groupBy = query.select().get(0);
+        String target = query.select().get(1);
+        Map<String, ColumnMeta> dictionary = queryExecutor.getDictionary();
+        ColumnMeta groupMeta = dictionary.get(groupBy);
+        ColumnMeta targetMeta = dictionary.get(target);
+        if (groupMeta == null || targetMeta == null) {
+            throw new IllegalArgumentException("Unknown concept path in GROUPED_CROSS_COUNT select: " + query.select());
+        }
+        if (!groupMeta.isCategorical()) {
+            throw new IllegalArgumentException("GROUPED_CROSS_COUNT group concept must be categorical: " + groupBy);
+        }
+        boolean targetContinuous = !targetMeta.isCategorical();
+
+        Set<Integer> baseQueryPatientSet = queryExecutor.getPatientSubsetForQuery(query);
+        TreeMap<String, TreeSet<Integer>> groups = (TreeMap<String, TreeSet<Integer>>) phenotypicObservationStore.getCube(groupBy)
+            .map(PhenoCube::getCategoryMap).orElseGet(TreeMap::new);
+
+        Map<String, Map<String, Integer>> counts = new TreeMap<>();
+        for (Map.Entry<String, TreeSet<Integer>> group : groups.entrySet()) {
+            Set<Integer> groupPatients = new HashSet<>(Sets.intersection(group.getValue(), baseQueryPatientSet));
+            if (groupPatients.isEmpty()) {
+                continue;
+            }
+            Map<String, Integer> targetCounts =
+                targetContinuous ? countValues(target, groupPatients) : countCategories(target, groupPatients);
+            if (!targetCounts.isEmpty()) {
+                counts.put(group.getKey(), targetCounts);
+            }
+        }
+        return new GroupedCrossCount(groupBy, target, targetContinuous, counts);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Integer> countCategories(String conceptPath, Set<Integer> patients) {
+        TreeMap<String, TreeSet<Integer>> categoryMap = (TreeMap<String, TreeSet<Integer>>) phenotypicObservationStore.getCube(conceptPath)
+            .map(PhenoCube::getCategoryMap).orElseGet(TreeMap::new);
+        Map<String, Integer> counts = new TreeMap<>();
+        categoryMap.forEach((category, categoryPatients) -> {
+            int count = Sets.intersection(categoryPatients, patients).size();
+            if (count > 0) {
+                counts.put(category, count);
+            }
+        });
+        return counts;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Integer> countValues(String conceptPath, Set<Integer> patients) {
+        KeyAndValue<Double>[] pairs = phenotypicObservationStore.getCube(conceptPath)
+            .map(phenoCube -> ((PhenoCube<Double>) phenoCube).getEntriesForValueRange(null, null)).orElseGet(() -> new KeyAndValue[] {});
+        Map<Double, Integer> counts = new TreeMap<>();
+        for (KeyAndValue<Double> pair : pairs) {
+            if (patients.contains(pair.getKey())) {
+                counts.merge((double) pair.getValue(), 1, Integer::sum);
+            }
+        }
+        // Keys as strings to share the categorical shape; TreeMap above keeps them in numeric order
+        Map<String, Integer> out = new LinkedHashMap<>();
+        counts.forEach((value, count) -> out.put(String.valueOf(value), count));
+        return out;
     }
 
     /**
