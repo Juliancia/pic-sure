@@ -1,5 +1,6 @@
 package edu.harvard.hms.dbmi.avillach.hpds.processing;
 
+import edu.harvard.hms.dbmi.avillach.hpds.data.phenotype.PhenoCube;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.Query;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,9 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.Mockito.when;
@@ -25,6 +29,24 @@ public class CountProcessorTest {
 	public CountProcessorTest(@Mock AbstractProcessor mockAbstractProcessor) {
 		this.mockAbstractProcessor = mockAbstractProcessor;
 		this.countProcessor = new CountProcessor(mockAbstractProcessor);
+	}
+
+	@Test
+	public void runCategoryCrossCounts_countsOnlyPatientsInCohort_whenCohortPartiallyOverlapsCategory() {
+		PhenoCube<String> sex = new PhenoCube<>("\\sex\\", String.class);
+		sex.setCategoryMap(new TreeMap<>(Map.of(
+			"Female", new TreeSet<>(Set.of(1, 2, 3)),
+			"Male", new TreeSet<>(Set.of(4, 5))
+		)));
+		Query query = new Query();
+		query.setRequiredFields(List.of("\\sex\\"));
+		when(mockAbstractProcessor.getPatientSubsetForQuery(query)).thenReturn(Set.of(1, 3));
+		when(mockAbstractProcessor.getCube("\\sex\\")).thenReturn((PhenoCube) sex);
+
+		Map<String, Map<String, Integer>> counts = countProcessor.runCategoryCrossCounts(query);
+
+		// Patients 1 and 3 are the only Females in the cohort; no Males are
+		assertEquals(Map.of("Female", 2, "Male", 0), counts.get("\\sex\\"));
 	}
 
 	@Test
