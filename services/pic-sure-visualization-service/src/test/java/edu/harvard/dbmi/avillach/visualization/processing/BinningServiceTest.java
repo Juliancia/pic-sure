@@ -230,4 +230,25 @@ class BinningServiceTest {
         assertEquals("25.0", result.keySet().iterator().next(), "Single data point should not be labeled as a range");
         assertEquals(100, result.values().iterator().next());
     }
+
+    @Test
+    void bucketDataShared_givesEveryGroupTheSameBinsAndKeepsTotals() {
+        Map<String, Map<String, Integer>> groups = new LinkedHashMap<>();
+        Map<String, Integer> female = new LinkedHashMap<>();
+        for (int age = 10; age <= 24; age += 2) {
+            female.put(age + ".0", 1);
+        }
+        groups.put("female", female);
+        groups.put("male", Map.of("90.0", 3));
+
+        Map<String, Map<String, Integer>> result = binningService.bucketDataShared(groups);
+
+        assertEquals(result.get("female").keySet(), result.get("male").keySet());
+        assertEquals(8, result.get("female").values().stream().mapToInt(Integer::intValue).sum());
+        assertEquals(3, result.get("male").values().stream().mapToInt(Integer::intValue).sum());
+        assertTrue(result.get("male").size() > 1, "values 10-24 and 90 should need more than one bin");
+        // male has no values in the lowest bin, but the bin is still present with 0
+        String firstBin = result.get("male").keySet().iterator().next();
+        assertEquals(0, result.get("male").get(firstBin));
+    }
 }

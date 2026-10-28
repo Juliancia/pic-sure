@@ -9,7 +9,9 @@ import edu.harvard.dbmi.avillach.visualization.model.DistributionType;
 import edu.harvard.dbmi.avillach.visualization.model.ObfuscatedCount;
 import edu.harvard.hms.dbmi.avillach.commons.identity.GatewayUserResolver;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.ResultType;
+import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.GroupedCrossCount;
 import edu.harvard.hms.dbmi.avillach.hpds.data.query.v3.Query;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -42,6 +44,7 @@ import org.springframework.web.client.RestClient;
 public class QueryServiceClient {
 
     private static final Logger logger = LoggerFactory.getLogger(QueryServiceClient.class);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     /** Gateway-owned identity headers and the caller credential to forward downstream. */
     public record GatewayIdentity(
@@ -79,6 +82,17 @@ public class QueryServiceClient {
         return queryCrossCounts(
             query, resultType, identity, requestId, AccessType.OPEN, distributionKind, new ParameterizedTypeReference<>() {}
         );
+    }
+
+    /**
+     * Runs a {@code GROUPED_CROSS_COUNT} query on the authorized backend. The response is fetched through the same audited path as the
+     * cross counts and then read as a {@link GroupedCrossCount}.
+     */
+    public GroupedCrossCount getAuthGroupedCrossCount(Query query, GatewayIdentity identity, String requestId) {
+        Map<String, Object> body = queryCrossCounts(
+            query, ResultType.GROUPED_CROSS_COUNT, identity, requestId, AccessType.AUTHORIZED, null, new ParameterizedTypeReference<>() {}
+        );
+        return OBJECT_MAPPER.convertValue(body, GroupedCrossCount.class);
     }
 
     private <T> Map<String, T> queryCrossCounts(
